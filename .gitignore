@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.python-version
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+
+# Outputs
+center_of_rotation.txt
+predicts_all.npz
+*.pt

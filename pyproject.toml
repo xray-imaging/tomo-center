@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tomo-center-ai"
+version = "0.1.0"
+description = "AI rotation-axis center picker for pre-reconstructed TIFF slices (vendored from tomocupy)."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "Francesco De Carlo" }]
+dependencies = [
+    "numpy<2",
+    "pillow",
+    "tifffile",
+    "torch",
+    "einops",
+]
+
+[project.scripts]
+tomo-center-ai = "tomo_center_ai.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tomo_center_ai = ["py.typed"]
