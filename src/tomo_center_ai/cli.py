@@ -61,6 +61,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=0, help="RNG seed (default: 0).")
     p.add_argument("--save-intermediate", action="store_true",
                    help="Also save predicts_all.npz to --out-dir.")
+    p.add_argument(
+        "--plot",
+        nargs="?",
+        type=Path,
+        const="__default__",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Save a PNG of per-slice probability vs. candidate center. "
+            "Without a value, writes to <out-dir>/scores.png. "
+            "Requires the [plot] extra: pip install -e '.[plot]'."
+        ),
+    )
     return p
 
 
@@ -96,18 +109,71 @@ def main(argv: list[str] | None = None) -> int:
         infer_save_intermediate_data=args.save_intermediate,
     )
 
-    chosen = inference_pipeline(
+    result = inference_pipeline(
         infer_args,
         stack,
         centers,
         str(args.out_dir),
     )
+    chosen = result["centers"]
 
     print("\nBest center(s):")
     for c in chosen:
         print(f"  {c:.1f}")
     print(f"\nAppended to {args.out_dir / 'center_of_rotation.txt'}")
+
+    if args.plot is not None:
+        plot_path = (
+            args.out_dir / "scores.png"
+            if str(args.plot) == "__default__"
+            else args.plot
+        )
+        _plot_scores(result["candidates"], result["scores"], chosen, plot_path)
+        print(f"Wrote score plot to {plot_path}")
+
     return 0
+
+
+def _plot_scores(candidates, scores, chosen, out_path: Path) -> None:
+    """Save a probability-vs-candidate-center plot. Lazy-imports matplotlib."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # headless backend; no display needed
+        import matplotlib.pyplot as plt
+    except ImportError as e:
+        raise SystemExit(
+            "--plot requires matplotlib. Install with: pip install -e '.[plot]' "
+            "(or: pip install matplotlib)"
+        ) from e
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Sort by candidate center so the line connects in monotonic order.
+    order = sorted(range(len(candidates)), key=lambda i: candidates[i])
+    xs = [candidates[i] for i in order]
+    ys = [scores[i] for i in order]
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(xs, ys, "-o", markersize=4, linewidth=1, label="P(correct center)")
+    for c in chosen:
+        ax.axvline(c, linestyle="--", linewidth=1, alpha=0.7,
+                   label=f"picked: {c:.2f}")
+    ax.set_xlabel("Candidate center of rotation (px)")
+    ax.set_ylabel("Score (softmax of class-1 logit)")
+    ax.set_ylim(0, 1.02)
+    ax.set_title("Per-slice probability of being the correct center")
+    ax.grid(True, alpha=0.3)
+    # Dedupe legend entries (one axvline per picked center would clutter).
+    handles, labels = ax.get_legend_handles_labels()
+    seen, uniq_h, uniq_l = set(), [], []
+    for h, l in zip(handles, labels):
+        if l not in seen:
+            seen.add(l); uniq_h.append(h); uniq_l.append(l)
+    ax.legend(uniq_h, uniq_l, loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

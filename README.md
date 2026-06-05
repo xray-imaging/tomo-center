@@ -90,6 +90,25 @@ tomo-center-ai /path/to/recons --model-path model.pt \
 - `center_of_rotation.txt` — one center per line (appended, not overwritten).
 - `predicts_all.npz` — raw model logits + the center list, if
   `--save-intermediate` is passed.
+- `scores.png` (or a custom path) — per-slice probability vs. candidate
+  center, if `--plot` is passed.
+
+## Diagnostic plot
+
+```bash
+pip install -e '.[plot]'                # adds matplotlib
+
+tomo-center-ai /path/to/recons \
+    --model-path /path/to/model.pt \
+    --plot                              # → <out-dir>/scores.png
+# or:
+tomo-center-ai /path/to/recons --model-path model.pt --plot my-scan.png
+```
+
+A sharp peak with neighbors tapering off → confident pick. A flat curve or
+several near-ties at the top → the sweep was too coarse, too narrow, or the
+slices don't carry enough signal for the classifier to discriminate; re-sweep
+finer around the picked value and run again.
 
 ## Attribution
 

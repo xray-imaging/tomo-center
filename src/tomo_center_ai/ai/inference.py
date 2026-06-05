@@ -140,4 +140,8 @@ def inference_pipeline(args, img_cache_original, center_of_rotation_cache, out_d
     with open(Path(out_dir)/'center_of_rotation.txt','a') as f:
         for cor in centers_of_rotation:
             f.write(f"{cor:.1f}\n")
-    return centers_of_rotation
+    return {
+        "centers": centers_of_rotation,
+        "scores": scores,
+        "candidates": list(center_of_rotation_cache),
+    }

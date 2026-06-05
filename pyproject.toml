@@ -18,6 +18,9 @@ dependencies = [
     "einops",
 ]
 
+[project.optional-dependencies]
+plot = ["matplotlib"]
+
 [project.scripts]
 tomo-center-ai = "tomo_center_ai.cli:main"
 
