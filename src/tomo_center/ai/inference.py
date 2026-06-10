@@ -8,8 +8,8 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 
-from tomo_center_ai import logging as tca_logging
-from tomo_center_ai.ai.model_archs import ClassificationModel, _make_dinov2_model
+from tomo_center import logging as tca_logging
+from tomo_center.ai.model_archs import ClassificationModel, _make_dinov2_model
 
 log = tca_logging.getLogger(__name__)
 

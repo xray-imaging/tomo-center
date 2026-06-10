@@ -1,6 +1,7 @@
-# tomo-center-ai
+# tomo-center
 
-Standalone AI rotation-axis center picker for pre-reconstructed TIFF slices.
+Standalone AI rotation-axis center picker and fine-tuner for pre-reconstructed
+TIFF slices.
 
 The model and inference code are **vendored from
 [tomocupy/develop](https://github.com/stang292/tomocupy/tree/develop/src/tomocupy/ai)**
@@ -8,14 +9,12 @@ The model and inference code are **vendored from
 the classifier outside the full `tomocupy` reconstruction stack — no CUDA build,
 no SWIG, no HDF5 reader.
 
-## What it does
+Two subcommands:
 
-Given a folder of TIFF slices — each one already reconstructed at a different
-candidate center of rotation — the DINOv2-based classifier scores every slice
-and writes the candidate(s) with the highest "correct center" probability.
-
-Input shape per slice: 2D, any dtype (cast to float32). All slices must share
-the same `(H, W)`.
+| Command | What it does |
+| --- | --- |
+| `tomo-center find`  | Score a folder of reconstructed slices (one per candidate center) and report the best center. |
+| `tomo-center train` | Fine-tune the classifier head on labeled slices to adapt the shipped checkpoint to a new sample family. |
 
 ## Install
 
@@ -23,13 +22,12 @@ Use a dedicated conda env — `torch` and a pinned `numpy<2` would conflict with
 most existing envs.
 
 ```bash
-conda create -n tomo-center-ai python=3.10 pip -y
-conda activate tomo-center-ai
-pip install -e /path/to/tomo-center-ai
+conda create -n tomo-center python=3.10 pip -y
+conda activate tomo-center
+pip install -e /path/to/tomo-center
 ```
 
-The editable install (`pip install -e .`) pulls every runtime dep declared in
-`pyproject.toml`. The full list:
+The editable install pulls every runtime dep declared in `pyproject.toml`:
 
 | Package    | Why                                                          |
 | ---------- | ------------------------------------------------------------ |
@@ -39,9 +37,9 @@ The editable install (`pip install -e .`) pulls every runtime dep declared in
 | `torch`    | DINOv2 backbone + classifier head                            |
 | `einops`   | tensor rearrange used inside `model_archs.py`                |
 
-GPU inference is automatic when CUDA is available — install the matching
-`torch` CUDA wheel for your system (see https://pytorch.org/get-started). CPU
-works but is slow.
+GPU is automatic when CUDA is available — install the matching `torch` CUDA
+wheel for your system (see https://pytorch.org/get-started). CPU works but is
+slow.
 
 ## Get the model checkpoint
 
@@ -49,12 +47,12 @@ works but is slow.
 https://anl.box.com/s/4o8qcig6pl9k8p7x4z3qqbrpgnjipolq
 ```
 
-## Run
+## `find` — pick the best center
 
 ```bash
-tomo-center-ai /path/to/recons \
+tomo-center find /path/to/recons \
     --model-path /path/to/model.pt \
-    --out-dir   /path/to/out
+    --out-dir    /path/to/out
 ```
 
 ### Example
@@ -62,12 +60,12 @@ tomo-center-ai /path/to/recons \
 200 slices reconstructed at centers 974.5–1074.0, run on tomo4 (GPU):
 
 ```console
-$ tomo-center-ai \
+$ tomo-center find \
     /data2/2BM/2023-04/Strumendo-2023-04_rec/try_center/CaCO3room_001/ \
     --model-path /home/beams/2BMB/models/datav2_518_full_finetune.pt \
-    --out-dir    ~/tomo-center-ai-out/CaCO3room_001 \
+    --out-dir    ~/tomo-center-out/CaCO3room_001 \
     --plot
-2026-06-05 20:03:03,134 - Loading TIFFs from /data2/2BM/2023-04/Strumendo-2023-04_rec/try_center/CaCO3room_001 ...
+2026-06-05 20:03:03,134 - Loading TIFFs from /data2/2BM/.../CaCO3room_001 ...
 2026-06-05 20:03:05,058 -   200 slices, shape (2048, 2048), dtype float32
 2026-06-05 20:03:05,059 -   center range: 974.5 .. 1074.0
 2026-06-05 20:03:06,894 - starting model inference...
@@ -89,7 +87,7 @@ slice's candidate center, e.g. `recon_0001_1234.50.tif → 1234.5`.
 If your filenames don't carry the center, supply a sidecar file:
 
 ```bash
-tomo-center-ai /path/to/recons \
+tomo-center find /path/to/recons \
     --model-path /path/to/model.pt \
     --centers-file centers.txt
 ```
@@ -103,13 +101,13 @@ The upstream pipeline supports running multiple `(downsample, num_windows, windo
 scales and combining their features. Pass matching-length lists:
 
 ```bash
-tomo-center-ai /path/to/recons --model-path model.pt \
+tomo-center find /path/to/recons --model-path model.pt \
     --downsample-factor 1 2 \
     --num-windows       4 4 \
     --window-size       224 224
 ```
 
-## Output
+### Output
 
 - `center_of_rotation.txt` — one center per line (appended, not overwritten).
 - `predicts_all.npz` — raw model logits + the center list, if
@@ -117,16 +115,13 @@ tomo-center-ai /path/to/recons --model-path model.pt \
 - `scores.png` (or a custom path) — per-slice probability vs. candidate
   center, if `--plot` is passed.
 
-## Diagnostic plot
+### Diagnostic plot
 
 ```bash
-pip install -e '.[plot]'                # adds matplotlib
+pip install -e '.[plot]'              # adds matplotlib
 
-tomo-center-ai /path/to/recons \
-    --model-path /path/to/model.pt \
-    --plot                              # → <out-dir>/scores.png
-# or:
-tomo-center-ai /path/to/recons --model-path model.pt --plot my-scan.png
+tomo-center find /path/to/recons --model-path model.pt --plot
+# → <out-dir>/scores.png, opens an interactive window if $DISPLAY is set
 ```
 
 A sharp peak with neighbors tapering off → confident pick (see the
@@ -135,17 +130,151 @@ sweep was too coarse, too narrow, or the slices don't carry enough signal for
 the classifier to discriminate; re-sweep finer around the picked value and run
 again.
 
+## `train` — fine-tune the classifier head
+
+Use this to adapt the shipped checkpoint to a new sample family. Only the
+**1,538-parameter classifier head** is trained — the DINOv2 backbone stays
+frozen (the vendored `ClassificationModel.forward` enforces that). Full
+backbone fine-tuning is out of scope for this repo.
+
+### Data layout
+
+```
+labels/
+  centered/
+    sampleA_1023.0.tif        # the visually-picked center from sample A's sweep
+    sampleB_1018.5.tif        # ...from sample B's sweep
+    sampleC_1031.2.tif        # ...from sample C's sweep
+    ...
+  off_centered/
+    sampleA_980.0.tif         # any "obviously wrong" centers from sample A
+    sampleA_1050.0.tif
+    sampleB_1000.0.tif
+    sampleC_1080.0.tif
+    ...
+```
+
+Each TIFF is one 2D reconstructed slice. Label = which subfolder it's in.
+
+**Per sweep there is only one correct center**, so `centered/` gets one
+positive per sample. To train a binary classifier you need many positives,
+which means you need **labels from many different samples**. A practical
+recipe: run a CoR sweep on each of N representative scans (different
+materials, contrasts, artifacts), visually pick the correct reconstruction
+for each, drop it in `centered/`, and drop a handful of obviously-wrong
+reconstructions from the same sweep into `off_centered/`. Aim for at least
+~30 samples to get a useful training set.
+
+(Optional: if you accept a tolerance band, copy a small bracket — e.g.
+`1022.5, 1023.0, 1023.5` — to `centered/` from each sweep. Slightly dilutes
+the positive signal but gives the head more data; not strictly necessary.)
+
+### Preparing labels from facility reconstruction output
+
+Most reconstruction tools don't write files in the flat `<sample>_<center>.tif`
+form that `train` expects — they put the sample in a per-sweep folder and only
+the center in the filename. The fix is a one-time copy + rename per labeled
+sample.
+
+#### Tomocupy
+
+`tomocupy recon ... --reconstruction-type try` writes:
+
+```
+.../try_center/<SAMPLE>/recon_<CENTER>.tif
+```
+
+— sample in the folder, center in the file. Collect labels with:
+
+```bash
+mkdir -p ~/labels/centered ~/labels/off_centered
+
+SWEEP=/data2/2BM/2023-04/Strumendo-2023-04_rec/try_center/CaCO3room_001
+SAMPLE=CaCO3room_001
+PICKED=1023.00
+
+# the visually-picked center → positive
+cp $SWEEP/recon_${PICKED}.tif ~/labels/centered/${SAMPLE}_${PICKED}.tif
+
+# a handful of obviously-wrong centers from the same sweep → negatives
+for c in 980.00 1000.00 1050.00 1070.00; do
+    cp $SWEEP/recon_${c}.tif ~/labels/off_centered/${SAMPLE}_${c}.tif
+done
+```
+
+Verify the exact tomocupy filename format with `ls $SWEEP/ | head` first —
+zero-padding and decimal precision can vary by tomocupy version.
+
+Repeat for each sample you label, then point `tomo-center train` at `~/labels/`.
+
+#### Other facilities / other reconstruction tools
+
+The recipe above is the template. `tomo-center train` only requires:
+
+1. Files live in `centered/` or `off_centered/` under one parent directory.
+2. They're TIFF (`.tif` / `.tiff`).
+3. Names are unique within their subfolder — `<sample>_<center>.tif` is a safe
+   convention.
+
+Adapt the source path and the `cp` line to your facility's output layout (e.g.
+Diamond's `savu`, ESRF's `nabu`, ALS's `tomopy` scripts — all use slightly
+different folder/filename schemes).
+
+### Run
+
+```bash
+tomo-center train /path/to/labels \
+    --resume /path/to/datav2_518_full_finetune.pt \
+    --out    /path/to/finetuned_model.pt
+```
+
+`--resume` is strongly recommended: starting fresh requires downloading
+DINOv2's public weights from Meta via `torch.hub`, which needs internet (won't
+work on private beamline networks).
+
+### Defaults and key flags
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--epochs` | 20 | Head-only training is fast — try a few values. |
+| `--batch-size` | 8 | Bump up to fit GPU memory. |
+| `--lr` | 5e-5 | AdamW. |
+| `--val-split` | 0.1 | Held-out fraction for per-epoch val accuracy logging. |
+| `--window-size` | 224 | Must match the value you use at inference. |
+| `--no-augment` | off | By default training uses random horizontal flip + small (±sz/8) crop offset. |
+| `--base-model` | `dinov2_vitb14` | Backbone variant for the (rare) from-scratch path. |
+
+### Output
+
+A `.pt` file at `--out`, saved only when val accuracy improves. Structure:
+
+```python
+{"epoch": ..., "state_dict": ..., "args": {...}, "val_acc": ...}
+```
+
+Load it back with `tomo-center find --model-path <out>.pt`.
+
+### Hub access on offline boxes
+
+When `--resume` is **not** given, `train` calls
+`torch.hub.load('facebookresearch/dinov2', ...)`, which goes to the internet.
+On private networks (e.g., APS `tomo4`) this fails with a clear error message —
+use `--resume` instead.
+
 ## Attribution
 
-- `src/tomo_center_ai/ai/inference.py` — vendored from
+- `src/tomo_center/ai/inference.py` — vendored from
   `tomocupy/src/tomocupy/ai/inference.py`. Changes vs. upstream: internal
   import path; switched `print()` to the package logger; fixed an
   `UnboundLocalError` in the single-instance branch (`patch_corner` →
   `patch_corners`).
-- `src/tomo_center_ai/ai/model_archs.py` — vendored verbatim from
+- `src/tomo_center/ai/model_archs.py` — vendored verbatim from
   `tomocupy/src/tomocupy/ai/model_archs.py`. It in turn includes a DINOv2 ViT
   (Apache-2.0, Meta) and attention pooling (MIT, Ilse & Tomczak).
-- `src/tomo_center_ai/logging.py` — adapted from
+- `src/tomo_center/logging.py` — adapted from
   `tomocupy/src/tomocupy/logging.py` (same colored-console formatter, scoped
-  to the `tomo_center_ai.*` logger tree).
+  to the `tomo_center.*` logger tree).
+- `src/tomo_center/train.py` — new. Single-GPU head-only fine-tune harness;
+  the AdamW gain/bias weight-decay split and cosine-LR-with-warmup recipe are
+  borrowed from an internal training script by S. Tang.
 - See `LICENSE` for the upstream BSD-3 terms.
