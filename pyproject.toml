@@ -3,9 +3,9 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tomo-center-ai"
-version = "0.1.0"
-description = "AI rotation-axis center picker for pre-reconstructed TIFF slices (vendored from tomocupy)."
+name = "tomo-center"
+version = "0.2.0"
+description = "AI rotation-axis center picker (find) and fine-tuner (train) for pre-reconstructed TIFF slices (vendored from tomocupy)."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
@@ -22,10 +22,10 @@ dependencies = [
 plot = ["matplotlib"]
 
 [project.scripts]
-tomo-center-ai = "tomo_center_ai.cli:main"
+tomo-center = "tomo_center.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-tomo_center_ai = ["py.typed"]
+tomo_center = ["py.typed"]

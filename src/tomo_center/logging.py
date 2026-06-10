@@ -1,7 +1,7 @@
-"""Customized logging for tomo-center-ai.
+"""Customized logging for tomo-center.
 
 Adapted from tomocupy's logging module (BSD-3, UChicago Argonne LLC) — same
-formatter and setup helper, scoped to the `tomo_center_ai.*` logger tree.
+formatter and setup helper, scoped to the `tomo_center.*` logger tree.
 """
 import logging
 import traceback
@@ -19,7 +19,7 @@ def log_exception(logger, err, fmt="%s"):
 
 def setup_custom_logger(lfname: str = None, stream_to_console: bool = True, level=logging.INFO):
     """Attach console (colored) and optional file handlers to the package logger."""
-    parent_name = __name__.split(".")[0]  # "tomo_center_ai"
+    parent_name = __name__.split(".")[0]  # "tomo_center"
     parent_logger = logging.getLogger(parent_name)
     parent_logger.setLevel(logging.DEBUG)
     if lfname is not None:
