@@ -5,8 +5,7 @@ Single-GPU only; no distributed, no AMP, no wandb.
 NOTE: only the `nn.Linear(embed_dim, 2)` head is trained — the vendored
 `ClassificationModel.forward` hardcodes `self.model.eval()` + `torch.no_grad()`
 around the DINOv2 backbone, so backbone gradients never flow even if you set
-`requires_grad=True`. For full backbone fine-tuning, use the upstream
-multi-GPU script at open_clip_polaris/.../main_xray_finetune4.py.
+`requires_grad=True`. Full backbone fine-tuning is out of scope for this repo.
 
 Data layout:
     LABELS_DIR/centered/*.tif        # well-centered reconstructions  (label 1)

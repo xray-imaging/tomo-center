@@ -134,9 +134,8 @@ again.
 
 Use this to adapt the shipped checkpoint to a new sample family. Only the
 **1,538-parameter classifier head** is trained — the DINOv2 backbone stays
-frozen (the vendored `ClassificationModel.forward` enforces that). For full
-backbone fine-tuning, use the upstream multi-GPU script at
-`open_clip_polaris/.../main_xray_finetune4.py`.
+frozen (the vendored `ClassificationModel.forward` enforces that). Full
+backbone fine-tuning is out of scope for this repo.
 
 ### Data layout
 
@@ -210,7 +209,7 @@ use `--resume` instead.
 - `src/tomo_center/logging.py` — adapted from
   `tomocupy/src/tomocupy/logging.py` (same colored-console formatter, scoped
   to the `tomo_center.*` logger tree).
-- `src/tomo_center/train.py` — new. Single-GPU fine-tune harness; structure
-  inspired by `open_clip_polaris/src/open_clip_train/main_xray_finetune4.py`
-  (AdamW with gain/bias weight-decay split; cosine LR with linear warmup).
+- `src/tomo_center/train.py` — new. Single-GPU head-only fine-tune harness;
+  the AdamW gain/bias weight-decay split and cosine-LR-with-warmup recipe are
+  borrowed from an internal training script by S. Tang.
 - See `LICENSE` for the upstream BSD-3 terms.
