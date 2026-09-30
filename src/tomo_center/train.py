@@ -25,7 +25,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from tomo_center import logging as tca_logging
-from tomo_center.ai.model_archs import ClassificationModel, _make_dinov2_model
+from tomo_center.ai.model_archs import ClassificationModel, RangeClassificationModel, _make_dinov2_model
 
 log = tca_logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ def sample_patch_corner(sample_patch_probs,mask,window_size,num_windows):
     
     return patch_corners
 
-def _collect_pairs(image_root,meta_info_file,enlarge_factor,split_kw:str='case'):
+def _collect_pairs(image_root,meta_info_file,enlarge_factor,split_kw:str='case',cache_cors:bool=False):
     if type(split_kw) is not str:
         log.error("Input argumet: split_kw is expected to be of type str. Got %s instead.",type(split_kw).__name__)
         raise TypeError("Unexpected type for input argument.")
@@ -142,7 +142,7 @@ def _collect_pairs(image_root,meta_info_file,enlarge_factor,split_kw:str='case')
         image_root = [image_root]
     if type(meta_info_file) is str:
         meta_info_file = [meta_info_file]
-    if type(enlarge_factor) is str:
+    if type(enlarge_factor) is int:
         enlarge_factor = [enlarge_factor]
     
     if not isinstance(image_root,list):
@@ -162,6 +162,8 @@ def _collect_pairs(image_root,meta_info_file,enlarge_factor,split_kw:str='case')
     pairs = []
     tomo_masks = {}
     split_values = []
+    if cache_cors:
+        cors_all = []
     for image_root_, meta_info_file_, enlarge_factor_ in zip(image_root,meta_info_file,enlarge_factor):
         with open(meta_info_file_,'r') as fin:
             for line in fin:
@@ -188,12 +190,20 @@ def _collect_pairs(image_root,meta_info_file,enlarge_factor,split_kw:str='case')
                 
                 pairs.extend([(p,l) for p,l in zip(image_files_,labels)] * enlarge_factor_)
                 if split_kw == 'case':
-                    split_values.extend([image_dir for p in image_files_] * enlarge_factor_)
+                    split_values.extend([(image_root_ + '/' + image_dir) for p in image_files_] * enlarge_factor_)
+                if cache_cors:
+                    cors_all.extend(cors * enlarge_factor_)
     if split_kw == 'file':
         split_values = list(range(len(pairs)))
-        return pairs, tomo_masks, split_values
+        if cache_cors:
+            return pairs, tomo_masks, split_values, cors_all
+        else:
+            return pairs, tomo_masks, split_values
     else:
-        return pairs, tomo_masks, split_values
+        if cache_cors:
+            return pairs, tomo_masks, split_values, cors_all
+        else:
+            return pairs, tomo_masks, split_values
 
 def extract_cor_from_filename(filename: str) -> float:
     """Extract COR value from filename"""
@@ -219,6 +229,77 @@ def extract_cor_from_filename(filename: str) -> float:
         return float(f"{match.group(1)}.{match.group(2)}")
 
     return None
+
+class CoRRangeDataset(Dataset):
+    """Yields (image_tensor, label).
+
+    Tensor shape: (1, 1, sz, sz) — matches what `ClassificationModel` expects
+    when indexed as `sample['images'][:, 0]` in the single-window branch.
+    """
+
+    def __init__(self, pairs: List[Tuple[Path,int]], split_values: List[str|int], cors_all: List[float], window_size: int, num_windows: int, augment: bool, tomo_masks: Dict[str,np.ndarray], cor_sep_min: float=10, cor_sep_max: float=40):
+        self.pairs = list(pairs)
+        self.split_values = list(split_values)
+        self.cors_all = list(cors_all)
+        self.window_size = window_size
+        self.num_windows = num_windows
+        self.augment = augment
+        self.tomo_masks = tomo_masks
+        self.cor_sep_min = cor_sep_min
+        self.cor_sep_max = cor_sep_max
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def __getitem__(self, idx: int):
+        path, _ = self.pairs[idx]
+        cor = self.cors_all[idx]
+
+        cor_value_indices = [i for i in range(len(self.split_values)) if (self.split_values[i] == self.split_values[idx])]
+        free_cor_value_indices = [i for i in cor_value_indices if (abs(self.cors_all[i]-cor)>=self.cor_sep_min) and (abs(self.cors_all[i]-cor)<=self.cor_sep_max)]
+        optimal_cor_value_index_ = [i for i in cor_value_indices if self.pairs[i][1]]
+        optimal_cor_value_index = optimal_cor_value_index_[0]
+        optimal_cor = self.cors_all[optimal_cor_value_index]
+        idx2 = np.random.choice(free_cor_value_indices,1,replace=False).item()
+
+        path2, _ = self.pairs[idx2]
+        cor2 = self.cors_all[idx2]
+
+        img = tifffile.imread(str(path))
+        if img.ndim != 2:
+            raise ValueError(f"{path.name}: expected 2D image, got {img.shape}")
+        img = img.astype(np.float32, copy=False)
+        img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+
+        h, w = img.shape
+        sz = self.window_size
+        if h < sz or w < sz:
+            raise ValueError(f"{path.name}: image {img.shape} smaller than window {sz}")
+        
+        img2 = tifffile.imread(str(path2))
+        img2 = img2.astype(np.float32, copy=False)
+        img2 = (img2 - img2.min()) / (img2.max() - img2.min() + 1e-8)
+
+        mask = self.tomo_masks[h]
+
+        if self.augment and random.random() < 0.5:
+            img = np.fliplr(img)
+            img2 = np.fliplr(img2)
+            mask = np.fliplr(mask)
+        
+        sample_patch_probs = (mask / mask.sum()).reshape((-1,1)).squeeze().astype(np.float64)
+        patch_corners = sample_patch_corner(sample_patch_probs,mask,self.window_size,self.num_windows)
+        imgs = [img,img2]
+        crops = [[random_crop(im, self.window_size, patch_corner = patch_corner) for patch_corner in patch_corners] for im in imgs]
+
+        # (sz, sz) -> (k, r, 1, sz, sz): (channel=1, window-index slot used as channel-of-window)
+        if (optimal_cor <= max([cor,cor2])) and (optimal_cor >= min([cor,cor2])):
+            label = 1
+        else:
+            label = 0
+        tensors = [torch.concat([torch.from_numpy(np.ascontiguousarray(c)).float().unsqueeze(0).unsqueeze(0) for c in crop],dim=0) for crop in crops]
+        tensor = torch.cat(tensors,dim=1).unsqueeze(2)
+        return tensor, int(label)
 
 class CoRDataset(Dataset):
     """Yields (image_tensor, label).
@@ -265,7 +346,7 @@ class CoRDataset(Dataset):
         return tensor, int(label)
 
 
-def _split_pairs(pairs, val_split: float, seed: int, split_values=None):
+def _split_pairs(pairs, val_split: float, seed: int, split_values=None, cache_cors:bool=False, cors_all=None):
     rng = random.Random(seed)
     pairs = list(pairs)
     if split_values is None:
@@ -283,16 +364,28 @@ def _split_pairs(pairs, val_split: float, seed: int, split_values=None):
         train_common_values, val_common_values = common_values[n_val:], common_values[:n_val]
         train_split_indices = [idx for idx,val in enumerate(split_values) if val in train_common_values]
         val_split_indices = [idx for idx,val in enumerate(split_values) if val in val_common_values]
-        return [pairs[i] for i in train_split_indices],[pairs[i] for i in val_split_indices]
+        if cache_cors:
+            if not isinstance(cors_all,list):
+                log.error("cor values expected to be a list when set to be cached. Got %s instead.",type(split_values).__name__)
+                raise TypeError("Unexpected type for input argument.")
+            
+            return [pairs[i] for i in train_split_indices],[pairs[i] for i in val_split_indices],\
+                   [split_values[i] for i in train_split_indices],[split_values[i] for i in val_split_indices],\
+                   [cors_all[i] for i in train_split_indices],[cors_all[i] for i in val_split_indices]
+        else:
+            return [pairs[i] for i in train_split_indices],[pairs[i] for i in val_split_indices]
 
-def _resample_pairs(pairs, seed: int, resampling_method:str="upsample"):
+def _resample_pairs(pairs, seed: int, resampling_method:str="upsample", cache_cors:bool=False, split_values=None, cors_all=None):
     if type(resampling_method) is not str:
         log.error("Input argumet: resampling_method is expected to be of type str. Got %s instead.",type(resampling_method).__name__)
         raise TypeError("Unexpected type for input argument.")
     rng = random.Random(seed)
-    pairs_pos = [p for p in pairs if p[1]]
-    
-    pairs_neg = [p for p in pairs if not p[1]]
+    if cache_cors:
+        pairs_pos = [(*p,split_values[i],cors_all[i]) for i,p in enumerate(pairs) if p[1]]
+        pairs_neg = [(*p,split_values[i],cors_all[i]) for i,p in enumerate(pairs) if not p[1]]
+    else:
+        pairs_pos = [p for p in pairs if p[1]]
+        pairs_neg = [p for p in pairs if not p[1]]
     
 
     if len(pairs_pos) > len(pairs_neg):
@@ -306,12 +399,18 @@ def _resample_pairs(pairs, seed: int, resampling_method:str="upsample"):
         pairs_small_resample = rng.choices(pairs_small,k=len(pairs_large))
         pairs_resample = pairs_large+pairs_small_resample
         rng.shuffle(pairs_resample)
-        return pairs_resample
+        if cache_cors:
+            return [p[:2] for p in pairs_resample], [p[2] for p in pairs_resample], [p[3] for p in pairs_resample]
+        else:
+            return pairs_resample
     elif resampling_method == 'downsample':
         pairs_large_resample = rng.sample(pairs_large,k=len(pairs_small))
         pairs_resample = pairs_large_resample+pairs_small
         rng.shuffle(pairs_resample)
-        return pairs_resample
+        if cache_cors:
+            return [p[:2] for p in pairs_resample], [p[2] for p in pairs_resample], [p[3] for p in pairs_resample]
+        else:
+            return pairs_resample
     else:
         log.error(f"Resampling method {resampling_method} currently not supported. Please choose among: upsample, downsample, or undo resampling with: none")
         raise ValueError("Unexpected input %s",resampling_method)
@@ -319,31 +418,62 @@ def _resample_pairs(pairs, seed: int, resampling_method:str="upsample"):
 
 # ---------- model build / load ------------------------------------------------
 
-def _build_model(args, device: torch.device) -> ClassificationModel:
+def _build_model(args, device: torch.device) -> ClassificationModel | RangeClassificationModel:
     backbone = _make_dinov2_model()
     if args.resume is None:
-        log.info("Loading backbone from torch.hub (%s) — requires internet.", args.base_model)
-        try:
-            hub_model = torch.hub.load("facebookresearch/dinov2", args.base_model)
-        except Exception as e:
-            raise SystemExit(
-                f"--resume not given. Loading {args.base_model} from torch.hub requires "
-                f"internet (failed: {e}). Either pass --resume <existing checkpoint.pt> "
-                f"or run on a machine with internet access first."
-            ) from e
-        backbone.load_state_dict(hub_model.state_dict(), strict=False)
+        use_dinov2_weights_ok = True
+        if args.backbone_model_path is not None:
+            if args.backbone_model_path.exists():
+                use_dinov2_weights_ok = False
+                log.info(f"Initializing backbone model weights from checkpoint: {str(args.backbone_model_path)}")
+                model_backbone_dict = torch.load(args.backbone_model_path, map_location='cpu')['state_dict']
+                model_backbone_dict = {(k.replace("module.", "") if "module." in k else k): v for k, v in model_backbone_dict.items()}
+                model_dict = backbone.state_dict()
+                model_backbone_dict_ = {}
+                for k in model_dict.keys():
+                    k_ = 'model.'+k
+                    assert k_ in model_backbone_dict.keys()
+                    model_backbone_dict_[k] = model_backbone_dict[k_]
+                backbone.load_state_dict(model_backbone_dict_)
+        if use_dinov2_weights_ok:
+            log.info("Loading backbone from torch.hub (%s) — requires internet.", args.base_model)
+            try:
+                hub_model = torch.hub.load("facebookresearch/dinov2", args.base_model)
+            except Exception as e:
+                raise SystemExit(
+                    f"--resume not given. Loading {args.base_model} from torch.hub requires "
+                    f"internet (failed: {e}). Either pass --resume <existing checkpoint.pt> "
+                    f"or run on a machine with internet access first."
+                ) from e
+            backbone.load_state_dict(hub_model.state_dict(), strict=False)
 
     if args.freeze_backbone:
         for p in backbone.parameters():
             p.requires_grad = False
+    
     multi_instances = (args.num_windows>1)
-    model = ClassificationModel(
-        backbone,
-        embed_dim=backbone.embed_dim,
-        num_windows=[args.num_windows],
-        multi_instances=multi_instances,
-        freeze_backbone_ok=args.freeze_backbone
-    )
+    if args.model_type == 'parameter_classification':    
+        model = ClassificationModel(
+            backbone,
+            embed_dim=backbone.embed_dim,
+            num_windows=[args.num_windows],
+            multi_instances=multi_instances,
+            freeze_backbone_ok=args.freeze_backbone
+        )
+    elif args.model_type == 'parameter_range_classification':
+        model = RangeClassificationModel(
+            backbone,
+            embed_dim=backbone.embed_dim,
+            num_windows=[args.num_windows],
+            multi_instances=multi_instances,
+            freeze_backbone_ok=args.freeze_backbone,
+            num_frames=2,
+            multi_frames=True,
+            aggregator_depth=args.aggregator_depth, 
+            aggregator_num_heads=args.aggregator_num_heads
+        )
+    else:
+        raise ValueError(f"Model type {args.model_type} not supported. Only parameter_classification and parameter_range_classification supported for now.")
 
     if args.freeze_pooler:
         for p in model.attention.parameters():
@@ -351,6 +481,9 @@ def _build_model(args, device: torch.device) -> ClassificationModel:
         for p in model.gate.parameters():
             p.requires_grad = False
         for p in model.fc.parameters():
+            p.requires_grad = False
+    if args.freeze_aggregator:
+        for p in model.aggregator.parameters():
             p.requires_grad = False
 
     if args.resume is not None:
@@ -378,20 +511,33 @@ def _build_model(args, device: torch.device) -> ClassificationModel:
 
 # ---------- optimizer / scheduler ---------------------------------------------
 
-def _make_optimizer(model, lr: float, weight_decay: float) -> torch.optim.Optimizer:
+def _make_optimizer(model, lr: float, weight_decay: float, backbone_lr_divisor: float = 1.) -> torch.optim.Optimizer:
     """AdamW with no weight decay on gain/bias/norm parameters (matches Polaris script)."""
     def is_no_decay(name: str, p: torch.nn.Parameter) -> bool:
         return p.ndim < 2 or "bias" in name or "ln" in name or "bn" in name
-
-    no_decay, decay = [], []
+    def is_backbone(name: str) -> bool:
+        return name.startswith("model.")
+    
+    no_decay, decay_backbone, decay_non_backbone = [], [], []
     for n, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        (no_decay if is_no_decay(n, p) else decay).append(p)
-
+        if is_no_decay(n, p):
+            no_decay.append(p)
+        else:
+            if is_backbone(n):
+                decay_backbone.append(p)
+            else:
+                decay_non_backbone.append(p)
+    
+    log.info(f"Found {len(no_decay)} groups of trainable gain or bias parameters")
+    log.info(f"Found {len(decay_backbone)} groups of trainable backbone parameters")
+    log.info(f"Found {len(decay_non_backbone)} groups of trainable non-backbone parameters")
+    
     return torch.optim.AdamW(
         [{"params": no_decay, "weight_decay": 0.0},
-         {"params": decay,    "weight_decay": weight_decay}],
+         {"params": decay_backbone, "weight_decay": weight_decay, "lr": lr / backbone_lr_divisor},
+         {"params": decay_non_backbone, "weight_decay": weight_decay}],
         lr=lr,
     )
 
@@ -444,28 +590,48 @@ def run_training(args: argparse.Namespace) -> int:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-
+    if args.model_type == 'parameter_classification':
+        log.info("Training the parameter classification model.")
+        cache_cors = False
+    elif args.model_type == 'parameter_range_classification':
+        log.info("Training the parameter range classification model.")
+        cache_cors = True
+        args.resampling_method = 'none'
+    else:
+        raise ValueError(f"Model type {args.model_type} not supported. Only parameter_classification and parameter_range_classification supported for now.")
+    
     if args.device == "cuda" and not torch.cuda.is_available():
         log.warning("CUDA requested but not available; falling back to CPU (slow).")
         args.device = "cpu"
     device = torch.device(args.device)
 
     log.info("Scanning for labeled TIFFs ...")
-    
-    pairs, tomo_masks, split_values = _collect_pairs(args.image_root,args.meta_info_file,args.enlarge_factor,args.split_kw)
+    if cache_cors:
+        pairs, tomo_masks, split_values, cors_all = _collect_pairs(args.image_root,args.meta_info_file,args.enlarge_factor,args.split_kw,cache_cors=cache_cors)
+    else:
+        pairs, tomo_masks, split_values = _collect_pairs(args.image_root,args.meta_info_file,args.enlarge_factor,args.split_kw)
     log.info("  found %d slices total (centered=%d, off_centered=%d)",
              len(pairs),
              sum(1 for _, y in pairs if y == 1),
              sum(1 for _, y in pairs if y == 0))
-
-    train_pairs, val_pairs = _split_pairs(pairs, args.val_split, args.seed, split_values)
+    if cache_cors:
+        train_pairs, val_pairs, train_split_values, val_split_values, train_cors_all, val_cors_all = _split_pairs(pairs, args.val_split, args.seed, split_values, cache_cors=cache_cors, cors_all=cors_all)
+    else:
+        train_pairs, val_pairs = _split_pairs(pairs, args.val_split, args.seed, split_values)
     log.info("  split: train=%d  val=%d", len(train_pairs), len(val_pairs))
     if args.resampling_method != 'none':
-        train_pairs = _resample_pairs(train_pairs, args.seed, resampling_method=args.resampling_method)
+        if cache_cors:
+            train_pairs, train_split_values, train_cors_all = _resample_pairs(train_pairs, args.seed, resampling_method=args.resampling_method, cache_cors=cache_cors, split_values=train_split_values, cors_all=train_cors_all)
+        else:
+            train_pairs = _resample_pairs(train_pairs, args.seed, resampling_method=args.resampling_method)
         log.info("  split after %s: train=%d  val=%d",args.resampling_method, len(train_pairs), len(val_pairs))
 
-    train_ds = CoRDataset(train_pairs, args.window_size, args.num_windows, augment=not args.no_augment,tomo_masks=tomo_masks)
-    val_ds = CoRDataset(val_pairs, args.window_size, args.num_windows, augment=False,tomo_masks=tomo_masks) if val_pairs else None
+    if cache_cors:
+        train_ds = CoRRangeDataset(train_pairs, train_split_values, train_cors_all, args.window_size, args.num_windows, augment=not args.no_augment,tomo_masks=tomo_masks, cor_sep_min=args.cor_sep_min, cor_sep_max=args.cor_sep_max)
+        val_ds = CoRRangeDataset(val_pairs, val_split_values, val_cors_all, args.window_size, args.num_windows, augment=False,tomo_masks=tomo_masks, cor_sep_min=args.cor_sep_min, cor_sep_max=args.cor_sep_max)
+    else:
+        train_ds = CoRDataset(train_pairs, args.window_size, args.num_windows, augment=not args.no_augment,tomo_masks=tomo_masks)
+        val_ds = CoRDataset(val_pairs, args.window_size, args.num_windows, augment=False,tomo_masks=tomo_masks) if val_pairs else None
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.num_workers, pin_memory=(device.type == "cuda"))
@@ -474,7 +640,7 @@ def run_training(args: argparse.Namespace) -> int:
                   if val_ds is not None else None)
 
     model = _build_model(args, device)
-    optimizer = _make_optimizer(model, args.lr, args.weight_decay)
+    optimizer = _make_optimizer(model, args.lr, args.weight_decay, args.backbone_lr_divisor)
     total_steps = max(1, len(train_loader) * args.epochs)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, lr_lambda=_lr_lambda(args.warmup_steps, total_steps))

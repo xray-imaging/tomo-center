@@ -72,7 +72,7 @@ def _add_find_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--use-hierarchical-search", action="store_true")
     p.add_argument("--bin-infer-use-8bits", action="store_true")
     p.add_argument("--bin-infer-downsample-factor", type=int, nargs="+", default=[1])
-    p.add_argument("--bin-infer-num-windows", type=int, nargs="+", default=[20])
+    p.add_argument("--bin-infer-num-windows", type=int, nargs="+", default=[10])
     p.add_argument("--bin-infer-window-size", type=int, nargs="+", default=[518])
     p.add_argument("--bin-infer-bin-sizes", type=int, nargs="+", default=[24])
     p.add_argument("--bin-infer-bin-counts", type=int, nargs="+", default=[4])
@@ -80,7 +80,9 @@ def _add_find_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--bin-infer-aggregator-depth", type=int, default=5)
     p.add_argument("--bin-infer-aggregator-num-heads", type=int, default=12)
     p.add_argument("--bin-infer-seed-number", type=int, default=10)
-    p.add_argument("--bin-infer-model-path", type=Path, help="Range classifier checkpoint (.pt).")
+    p.add_argument("--bin-infer-model-path", type=Path, 
+                   help="Range classifier checkpoint (.pt). Download from "
+                        "https://anl.box.com/s/7kcmv9yav2j9y1c0b8lwhc1bp43tyrop")
     p.add_argument("--bin-infer-save-intermediate", action="store_true")
     p.set_defaults(func=cmd_find)
 
@@ -313,6 +315,17 @@ def _add_train_parser(sub: argparse._SubParsersAction) -> None:
                    help="Balance the training data by resampling data from one class.")
     p.add_argument("--checkpoint-every-epoch", action="store_true",
                    help="When set save the model weights for every training epoch.")
+    p.add_argument("--model-type", type=str, default='parameter_classification', choices=['parameter_classification','parameter_range_classification'],
+                   help="Type of model to train.")
+    p.add_argument("--aggregator-depth", type=int, default=5)
+    p.add_argument("--aggregator-num-heads", type=int, default=12)
+    p.add_argument("--backbone-model-path", type=Path, default=None)
+    p.add_argument("--cor-sep-min",type=float,default=10.)
+    p.add_argument("--cor-sep-max",type=float,default=40.)
+    p.add_argument("--freeze-aggregator", action="store_true",
+                    help="When set freeze the vision transformer aggregator weights.")
+    p.add_argument("--backbone-lr-divisor", type=float, default=1.,
+                    help="Initial learning rate divisor for backbone weights.")
     p.set_defaults(func=cmd_train)
 
 

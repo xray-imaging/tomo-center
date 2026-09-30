@@ -31,6 +31,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# Modifications Copyright 2026 tomo-center authors
+
 import torch
 from torch import Tensor
 import torch.nn as nn
@@ -819,53 +821,30 @@ class RangeClassificationModel(nn.Module):
         self.head = nn.Linear(embed_dim, num_classes)
 
     def forward(self, sample):
-        #TODO: modify the training logic according to the training dataset
         if self.training:
-            # features_all = []
-            # for idx_,sample_ in enumerate(sample):
-            #     images = sample_['images']
-            #     if self.freeze_backbone_ok:
-            #         self.model.eval()
-            #         with torch.no_grad():
-            #             if not self.multi_frames:
-            #                 assert self.num_frames == 1
-            #                 print("warning: only one frame input to the model which has been optimized for two-frame inputs")
-            #                 features_ = self.model(rearrange(images,'b k c h w -> (b k) c h w').repeat(1,3,1,1))
-            #                 features_ = rearrange(features_,'(b k) c -> b k c', k=self.num_windows[idx_])
-            #             else:
-                            
-            #                 features_ = self.model(rearrange(images,'b r s c h w -> (b r s) c h w').repeat(1,3,1,1),is_training=True)['x_norm_patchtokens']
-            #                 img_h, img_w = images.shape[-2:]
-            #                 features_ = rearrange(features_,'(b r s) (h w) c -> b r s h w c',r=self.num_windows[idx_],s=self.num_frames,h=img_h//self.model.patch_size,w=img_w//self.model.patch_size)
-            #     else:
-            #         if not self.multi_frames:
-            #             assert self.num_frames == 1
-            #             print("warning: only one frame input to the model which has been optimized for two-frame inputs")
-            #             features_ = self.model(rearrange(images,'b k c h w -> (b k) c h w').repeat(1,3,1,1),is_training=True)["x_norm_clstoken"]
-            #             features_ = rearrange(features_,'(b k) c -> b k c', k=self.num_windows[idx_])
-            #         else:
-                        
-            #             features_ = self.model(rearrange(images,'b r s c h w -> (b r s) c h w').repeat(1,3,1,1),is_training=True)['x_norm_patchtokens']
-            #             img_h, img_w = images.shape[-2:]
-            #             features_ = rearrange(features_,'(b r s) (h w) c -> b r s h w c',r=self.num_windows[idx_],s=self.num_frames,h=img_h//self.model.patch_size,w=img_w//self.model.patch_size)
-                
-            #     if self.multi_frames:
-            #         features_,_ = self.aggregator(features_)
-            #         features_ = features_[:,:,0] #b*k*c or b*r*c
-                
-            #     features_all.append(features_)
-
-            # features_all = torch.cat(features_all,dim=1)
-            # if (self.multi_instances or len(sample)>1):
-            #     attn = self.fc(self.attention(features_all) * self.gate(features_all)) #features_ is b*k*c
-            #     attn = torch.transpose(attn, 2, 1)  #attn is b*ATTENTION_BRANCHES*K after transposition
-            #     attn = F.softmax(attn, dim=2)  # softmax over K
-            #     return torch.mean(self.head(torch.bmm(attn,features_all)),dim=1)
-            # else:
-            #     return self.head(features_all[:,0]) #features_ is b*c
-            pass
+            images = sample['images']
+            if self.freeze_backbone_ok:
+                self.model.eval()
+                with torch.no_grad():
+                    features_ = self.model(rearrange(images,'b r s c h w -> (b r s) c h w').repeat(1,3,1,1),is_training=True)['x_norm_patchtokens']
+                    img_h, img_w = images.shape[-2:]
+                    features_ = rearrange(features_,'(b r s) (h w) c -> b r s h w c',r=self.num_windows[0],s=self.num_frames,h=img_h//self.model.patch_size,w=img_w//self.model.patch_size)
+            else:
+                features_ = self.model(rearrange(images,'b r s c h w -> (b r s) c h w').repeat(1,3,1,1),is_training=True)['x_norm_patchtokens']
+                img_h, img_w = images.shape[-2:]
+                features_ = rearrange(features_,'(b r s) (h w) c -> b r s h w c',r=self.num_windows[0],s=self.num_frames,h=img_h//self.model.patch_size,w=img_w//self.model.patch_size)
+            
+            features_,_ = self.aggregator(features_)
+            features_all = features_[:,:,0] #b*k*c or b*r*c
+            
+            if (self.multi_instances or len(sample)>1):
+                attn = self.fc(self.attention(features_all) * self.gate(features_all)) #features_ is b*k*c
+                attn = torch.transpose(attn, 2, 1)  #attn is b*ATTENTION_BRANCHES*K after transposition
+                attn = F.softmax(attn, dim=2)  # softmax over K
+                return torch.mean(self.head(torch.bmm(attn,features_all)),dim=1)
+            else:
+                return self.head(features_all[:,0]) #features_ is b*c
         else:
-            # if self.model is not None:
             features_all = []
             for idx_,sample_ in enumerate(sample):
                 images = sample_['images']

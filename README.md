@@ -115,6 +115,20 @@ tomo-center find /path/to/recons --model-path model.pt \
     --window-size       224 224
 ```
 
+### Hierarchical parameter search
+
+By default, model inference is run for each tiff image in `/path/to/recons`. To save time from loading tiff images and model inference, tomo-center also supports a hierarchical search mode by using an additional range classification model. Hierarchical search allows loading tiff images and running model inference on a fraction of the images from the try reconstruction. To enable hierarchical search, run:
+```bash
+tomo-center find /path/to/recons \
+    --model-path /path/to/model.pt \
+    --use-hierarchical-search \
+    --bin-infer-model-path /path/to/range_classification_model.pt \
+    --bin-infer-bin-sizes 24 12 \
+    --bin-infer-bin-counts 4 2 \
+    --out-dir /path/to/out
+```
+At each hierarchy level, the parameter range classification model is used to refine the rotation center parameter search space, bin the space in a coarse-to-fine order, and select the correct bin. In the end of the search, the parameter classification model is used to pick the rotation center parameter based on the highest score of a single tomogram reconstructed with the parameter in the refined range.
+
 ### Output
 
 - `center_of_rotation.txt` — one center per line (appended, not overwritten).
@@ -137,8 +151,8 @@ A sharp peak with neighbors tapering off → confident pick (see the
 
 ## `train` — fine-tune the model
 
-Use this to adapt the shipped checkpoint to tomograms. Supports both full fine tuning and fine tuning the task-specific layers. In the latter scenario, the
-**classifier head** is trained, and the **adaptive pooling weights** can be configured to be frozen or unfrozen.
+Use this to adapt the shipped checkpoint to tomograms. Supports both full fine tuning and fine tuning the task-specific layers of both the parameter and parameter range classification models. When fine-tuning the task-specific layers of the parameter classification model, the
+**classifier head** is trained, and the **adaptive pooling weights** can be configured to be frozen or unfrozen. When fine-tuning the parameter range classification model, both the **adaptive pooling weights** and **aggregator weights** can be configured to be frozen or unfrozen.
 
 ### Data layout
 #### Images
@@ -194,8 +208,8 @@ Adapt the source path and the `cp` line to your facility's output layout (e.g.
 Diamond's `savu`, ESRF's `nabu`, ALS's `tomopy` scripts — all use slightly
 different folder/filename schemes).
 
-### Run
-
+### Train parameter classification model
+#### Run
 ```bash
 tomo-center train --image-root /path/to/root1 /path/to/root2 ...\
     --meta-info-file /path/to/metadata1 /path/to/metadata2 ...\
@@ -222,6 +236,15 @@ tomo-center train --image-root /path/to/root1 /path/to/root2 ...\
     --freeze-backbone \
     --freeze-pooler
 ```
+### Train parameter range classification model
+#### Run
+```bash
+tomo-center train --image-root /path/to/root1 /path/to/root2 ...\
+    --meta-info-file /path/to/metadata1 /path/to/metadata2 ...\
+    --enlarge-factor 1 1 ...\
+    --out    /path/to/the/directory/containing/finetuned_model.pt \
+    --model-type parameter_range_classification
+```
 ### Defaults and key flags
 
 | Flag | Default | Notes |
@@ -234,7 +257,7 @@ tomo-center train --image-root /path/to/root1 /path/to/root2 ...\
 | `--num-windows` | 24 | When set invokes multi-instance learning. |
 | `--no-augment` | off | By default training uses random horizontal flip. |
 | `--base-model` | `dinov2_vitb14` | Backbone variant for the (rare) from-scratch path. |
-
+| `--model-type` | `parameter_classification` | Type of model to train - choose from **parameter_classification** and **parameter_range_classification**. |
 ### Output
 
 A `.pt` file at `--out`, saved only when val accuracy improves. In order to save model weights for each training epoch, enable `tomo-center train --checkpoint-every-epoch`. Output structure:

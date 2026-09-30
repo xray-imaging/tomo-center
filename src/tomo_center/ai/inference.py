@@ -1,6 +1,7 @@
 # Vendored from tomocupy (BSD-3, UChicago Argonne LLC)
 # https://github.com/stang292/tomocupy/blob/develop/src/tomocupy/ai/inference.py
 # Only change vs. upstream: import path for ClassificationModel/_make_dinov2_model.
+# Modifications Copyright 2026 tomo-center authors
 
 import time
 import torch
